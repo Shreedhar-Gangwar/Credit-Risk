@@ -1,0 +1,24 @@
+# Credit Risk Modeling Pipeline — Phase 1 dependencies
+# Version floors chosen to match a tested environment (Python 3.10+).
+# Install:  pip install -r requirements.txt
+
+# --- Core data / numerics ---
+pandas>=2.2,<3
+numpy>=2.0,<3
+scipy>=1.14
+
+# --- Modeling ---
+scikit-learn>=1.5,<2
+xgboost>=2.1
+
+# --- Interpretation ---
+shap>=0.46
+
+# --- Visualization ---
+matplotlib>=3.9
+seaborn>=0.13
+
+# --- Config, serialization, notebooks ---
+PyYAML>=6.0
+joblib>=1.4
+jupyter>=1.0

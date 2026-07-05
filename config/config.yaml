@@ -1,0 +1,95 @@
+# =============================================================================
+# Credit Risk Modeling Pipeline — central configuration
+# =============================================================================
+# All tunable parameters live here (CLAUDE.md §7: config-driven, not hardcoded).
+# Every module reads this file via `from config import load_config`.
+# Paths are relative to the repository root (d:/Credit_Risk).
+
+# --- Reproducibility -----------------------------------------------------------
+seed: 42                      # single source of randomness for splits, models, CV
+
+# --- Data ----------------------------------------------------------------------
+data:
+  raw_train: data/raw/application_train.csv
+  processed_dir: data/processed
+  target: TARGET              # 1 = default, 0 = repaid (already in this convention)
+  id_column: SK_ID_CURR       # unique primary key; excluded from features
+
+# --- Train / validation / test split ------------------------------------------
+# Stratified on the target. test carved out first, then validation from the
+# remainder, so the fractions below are fractions OF THE WHOLE dataset.
+split:
+  test_size: 0.15            # untouched until the final report
+  val_size: 0.15             # model selection
+  # -> train = 0.70
+  stratify: true
+
+# --- Cross-validation (on the train portion only) -----------------------------
+cv:
+  n_splits: 5                # StratifiedKFold for model comparison
+  tune_n_splits: 3           # smaller CV during hyperparameter search (speed)
+  # Hyperparameter search runs on a stratified subsample of TRAIN for speed —
+  # param rankings are stable at this size. The winning model is then refit on the
+  # FULL train (for fair validation) and on train+val (final artifact). null = use all.
+  tune_sample_size: 50000
+
+# --- Model hyperparameters ----------------------------------------------------
+# Bounded, sane search budgets (per approved plan) — a solid, defensible model,
+# not a leaderboard chase. Search grids are intentionally narrow.
+models:
+  primary_metric: roc_auc     # scoring for CV comparison + tuning
+
+  logistic_regression:
+    max_iter: 1000
+    class_weight: balanced    # handle 11.4:1 imbalance
+    solver: lbfgs             # fast on 215k rows (liblinear is for small data)
+    search:
+      n_iter: 4               # tiny grid; interpretable baseline
+      param_grid:
+        C: [0.01, 0.1, 1.0, 10.0]
+
+  random_forest:
+    # sensible, BOUNDED defaults (no unlimited-depth trees on 215k rows)
+    n_estimators: 200
+    max_depth: 12
+    min_samples_leaf: 30
+    class_weight: balanced_subsample
+    n_jobs: -1
+    search:
+      n_iter: 6               # small, time-boxed RandomizedSearchCV budget
+      param_grid:
+        n_estimators: [150, 200]
+        max_depth: [8, 12]            # bounded shallow trees — fast & guards overfit
+        min_samples_leaf: [20, 50, 100]
+        max_features: [sqrt, 0.3]
+
+  xgboost:
+    n_estimators: 300
+    tree_method: hist         # fast histogram algorithm
+    n_jobs: -1
+    # scale_pos_weight set at train time = n_neg / n_pos (imbalance handling)
+    search:
+      n_iter: 10              # bounded; xgboost/hist fits are cheap
+      param_grid:
+        max_depth: [3, 5, 7]
+        learning_rate: [0.03, 0.05, 0.1]
+        subsample: [0.7, 0.9, 1.0]
+        colsample_bytree: [0.7, 0.9, 1.0]
+
+# --- Evaluation (Stage F) -----------------------------------------------------
+# Relative business costs of the two error types, used to pick an operating
+# threshold and discuss the FP/FN trade-off. These are ILLUSTRATIVE defaults —
+# real values come from the lender's economics (expected loss given default vs
+# lost margin on a rejected good applicant).
+evaluation:
+  cost_false_negative: 10    # approving a defaulter -> lost principal (the expensive error)
+  cost_false_positive: 1     # rejecting a good applicant -> lost interest margin
+  default_threshold: 0.5
+
+# --- Output locations ---------------------------------------------------------
+artifacts:
+  model_dir: models/artifacts
+  pipeline_file: models/artifacts/credit_risk_pipeline.joblib
+reports:
+  dir: reports
+  figures_dir: reports/figures
