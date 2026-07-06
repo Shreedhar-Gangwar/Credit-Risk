@@ -33,6 +33,7 @@ from sklearn.metrics import (
 from config import ROOT, load_config, resolve_path
 from preprocessing.load import load_raw, split_X_y
 from preprocessing.pipeline import make_split
+from models.scoring import default_proba
 
 BLUE, RED = "#4C78A8", "#E4572E"
 
@@ -41,8 +42,8 @@ BLUE, RED = "#4C78A8", "#E4572E"
 # Data / model loading
 # --------------------------------------------------------------------------- #
 def load_artifact(cfg: dict):
-    bundle = joblib.load(resolve_path(cfg["artifacts"]["pipeline_file"]))
-    return bundle["pipeline"], bundle["metadata"]
+    """Return the full saved bundle (pipeline + metadata + optional calibrator)."""
+    return joblib.load(resolve_path(cfg["artifacts"]["pipeline_file"]))
 
 
 def recreate_splits(cfg: dict):
@@ -173,8 +174,8 @@ def plot_score_distribution(y, proba, out: Path):
     ax.hist(proba[y == 0], bins=50, alpha=0.6, color=BLUE, label="Repaid (0)", density=True)
     ax.hist(proba[y == 1], bins=50, alpha=0.6, color=RED, label="Default (1)", density=True)
     ax.set(xlabel="predicted probability of default", ylabel="density",
-           title="Predicted-score distribution by true class (test)\n"
-                 "note: shifted high — scale_pos_weight leaves scores uncalibrated")
+           title="Calibrated PD distribution by true class (test)\n"
+                 "defaulters shifted right; scores calibrated to the base rate")
     ax.legend()
     _save(fig, out)
 
@@ -184,28 +185,34 @@ def plot_score_distribution(y, proba, out: Path):
 # --------------------------------------------------------------------------- #
 def evaluate(cfg: dict | None = None) -> dict:
     cfg = cfg or load_config()
-    pipe, meta = load_artifact(cfg)
+    bundle = load_artifact(cfg)
+    meta = bundle["metadata"]
+    calibrated = bundle.get("calibrator") is not None
     X_val, y_val, X_test, y_test = recreate_splits(cfg)
 
     cost_fn = cfg["evaluation"]["cost_false_negative"]
     cost_fp = cfg["evaluation"]["cost_false_positive"]
-    default_t = cfg["evaluation"]["default_threshold"]
 
-    p_val = pipe.predict_proba(X_val)[:, 1]
-    p_test = pipe.predict_proba(X_test)[:, 1]
+    # Calibrated probability of default (falls back to raw if no calibrator).
+    p_val = default_proba(bundle, X_val)
+    p_test = default_proba(bundle, X_test)
 
     # Choose the operating threshold on VALIDATION (never on test).
     op_t, thresholds, val_costs = cost_optimal_threshold(y_val, p_val, cost_fn, cost_fp)
+    # Reference threshold = base rate (a sensible default for calibrated PDs), from val.
+    ref_t = float(y_val.mean())
 
     ti = threshold_independent(y_test, p_test)
     at_op = metrics_at(y_test, p_test, op_t)
-    at_half = metrics_at(y_test, p_test, default_t)
+    at_half = metrics_at(y_test, p_test, ref_t)
     _, _, test_costs = cost_optimal_threshold(y_test, p_test, cost_fn, cost_fp)
 
-    print(f"TEST  n={len(y_test):,}  prevalence={ti['prevalence']:.4f}")
+    print(f"TEST  n={len(y_test):,}  prevalence={ti['prevalence']:.4f}  "
+          f"scores={'calibrated' if calibrated else 'raw (uncalibrated)'}")
     print(f"  ROC-AUC={ti['roc_auc']:.4f}  PR-AUC={ti['pr_auc']:.4f}  Brier={ti['brier']:.4f}")
-    print(f"  operating threshold (from val, cost {cost_fn}:{cost_fp}) = {op_t:.2f}")
-    for tag, m in [("@0.50", at_half), ("@op", at_op)]:
+    print(f"  operating threshold (from val, cost {cost_fn}:{cost_fp}) = {op_t:.3f}  "
+          f"| base-rate ref = {ref_t:.3f}")
+    for tag, m in [("@ref", at_half), ("@op", at_op)]:
         print(f"  {tag}: precision={m['precision']:.3f} recall={m['recall']:.3f} "
               f"F1={m['f1']:.3f}  TP={m['tp']} FP={m['fp']} FN={m['fn']} TN={m['tn']}")
 
@@ -219,7 +226,8 @@ def evaluate(cfg: dict | None = None) -> dict:
     plot_score_distribution(y_test, p_test, fd / "13_score_distribution.png")
 
     results = {"threshold_independent": ti, "operating_threshold": op_t,
-               "at_operating": at_op, "at_half": at_half, "costs": (cost_fn, cost_fp)}
+               "at_operating": at_op, "at_half": at_half, "ref_threshold": ref_t,
+               "costs": (cost_fn, cost_fp), "calibrated": calibrated}
 
     # Persist the chosen operating point so inference applies the same business
     # decision threshold (derived on validation) without recomputing it.
@@ -237,19 +245,22 @@ def evaluate(cfg: dict | None = None) -> dict:
 def _write_report(r: dict, meta: dict, cfg: dict) -> None:
     ti, op, half = r["threshold_independent"], r["at_operating"], r["at_half"]
     cfn, cfp = r["costs"]
+    calibrated = r.get("calibrated", False)
+    brier_note = ("scores are calibrated (see `calibration.md`) — readable as actual "
+                  "probabilities" if calibrated else
+                  "high → scores inflated by `scale_pos_weight`; fine for ranking, not literal PDs")
     lines = [
         "# Stage F — Model Evaluation (untouched test set)\n",
-        f"Final model: **{meta['selected_model']}** (refit on {meta['refit_on']}). "
-        f"Test set = 15% held out, scored once. Prevalence (default rate) = "
-        f"{ti['prevalence']:.4f}.\n",
+        f"Final model: **{meta['selected_model']}** (refit on {meta['refit_on']}"
+        f"{', calibrated' if calibrated else ''}). Test set = 15% held out, scored once. "
+        f"Prevalence (default rate) = {ti['prevalence']:.4f}.\n",
         "## Threshold-independent metrics (headline)\n",
         "| Metric | Value | Reading |",
         "|---|---|---|",
         f"| ROC-AUC | **{ti['roc_auc']:.4f}** | ranking quality across all thresholds |",
         f"| PR-AUC | **{ti['pr_auc']:.4f}** | precision/recall on the rare positive "
         f"class (baseline = {ti['prevalence']:.3f}) |",
-        f"| Brier | {ti['brier']:.4f} | probability calibration (high → scores inflated "
-        "by `scale_pos_weight`; fine for ranking, not literal PDs) |",
+        f"| Brier | {ti['brier']:.4f} | probability calibration ({brier_note}) |",
         "\nROC-AUC and PR-AUC are the fair summary because they don't depend on an "
         "operating point. PR-AUC well above the prevalence baseline shows real signal on "
         "the minority (default) class.\n",
@@ -258,12 +269,12 @@ def _write_report(r: dict, meta: dict, cfg: dict) -> None:
         f"principal; a **false positive** (reject a good applicant) loses interest margin. "
         f"Using illustrative relative costs **FN:FP = {cfn}:{cfp}**, the expected-cost-"
         f"minimising threshold — chosen on the validation set, then applied to test — is "
-        f"**{op['threshold']:.2f}**.\n",
+        f"**{op['threshold']:.3f}**.\n",
         "| Operating point | Threshold | Precision | Recall | F1 | TP | FP | FN | TN |",
         "|---|---|---|---|---|---|---|---|---|",
-        f"| Cost-optimal (FN:FP={cfn}:{cfp}) | {op['threshold']:.2f} | {op['precision']:.3f} "
+        f"| Cost-optimal (FN:FP={cfn}:{cfp}) | {op['threshold']:.3f} | {op['precision']:.3f} "
         f"| {op['recall']:.3f} | {op['f1']:.3f} | {op['tp']} | {op['fp']} | {op['fn']} | {op['tn']} |",
-        f"| Naive reference | {half['threshold']:.2f} | {half['precision']:.3f} | "
+        f"| Base-rate reference | {half['threshold']:.3f} | {half['precision']:.3f} | "
         f"{half['recall']:.3f} | {half['f1']:.3f} | {half['tp']} | {half['fp']} | {half['fn']} | {half['tn']} |",
         f"\nAt the cost-optimal threshold the model catches **{op['recall']:.0%} of "
         f"defaulters** (recall) at **{op['precision']:.0%} precision** — i.e. it prevents "

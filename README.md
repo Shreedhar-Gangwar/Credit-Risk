@@ -22,9 +22,10 @@ Built in reviewable stages (see `CLAUDE.md` §5). Current progress:
 - [x] **Stage F** — evaluation on untouched test (ROC-AUC **0.764**, PR-AUC 0.251), curves, confusion matrix, FN/FP business-cost threshold analysis
 - [x] **Stage G** — interpretation: TreeSHAP importance/beeswarm/dependence + plain-language drivers (`reports/interpretation.md`)
 - [x] **Stage H** — reproducibility: inference script (`inference/predict.py`) + end-to-end runner (`run_pipeline.py`)
+- [x] **Polish** — probability **calibration** (isotonic, OOF; `models/calibrate.py`) + a **pytest** suite (`tests/`)
 
-**Phase 1 complete.** Phase 2 (deferred): the 8 relational side-tables, probability
-calibration, and a protected-attribute fairness review.
+**Phase 1 complete.** Phase 2 (deferred): the 8 relational side-tables and a deeper
+protected-attribute fairness review.
 
 ## Dataset
 
@@ -45,9 +46,10 @@ dataset and place them under `data/raw/`.
 config/         central YAML config + loader (paths, seed, split ratios, model params)
 preprocessing/  data loading, cleaning, reusable leakage-safe preprocessing pipeline
 features/       business-relevant feature engineering
-models/         training, tuning, saved artifacts (models/artifacts/)
+models/         training + tuning, probability calibration, scoring helper, artifacts/
 evaluation/     metrics, plots, business-cost analysis, SHAP interpretation
 inference/      load saved pipeline + model, score new rows (never re-fits)
+tests/          pytest suite (leakage-safety, pipeline shape, calibration, inference)
 notebooks/      EDA only (exploration, not the source of truth)
 reports/        generated reports, business insights, figures
 run_pipeline.py single end-to-end entry point
@@ -78,8 +80,10 @@ python -m inference.predict          # demo on a few rows from the raw data
 ```
 
 Individual stages are also runnable: `python -m models.train`,
-`python -m evaluation.evaluate`, `python -m evaluation.interpret`. EDA lives in
-`notebooks/01_eda.ipynb`.
+`python -m models.calibrate`, `python -m evaluation.evaluate`,
+`python -m evaluation.interpret`. EDA lives in `notebooks/01_eda.ipynb`.
+
+Tests: `python -m pytest` (from the repo root).
 
 ## Results (Phase 1)
 
@@ -88,18 +92,21 @@ Regression and Random Forest on validation ROC-AUC).
 
 | Metric (untouched test) | Value |
 |---|---|
-| ROC-AUC | **0.764** |
-| PR-AUC | 0.251 (vs 0.081 prevalence baseline) |
+| ROC-AUC | **0.763** |
+| PR-AUC | 0.244 (vs 0.081 prevalence baseline) |
+| Brier (after calibration) | **0.067** (from 0.196 raw) |
 | Recall @ cost-optimal threshold (FN:FP=10:1) | 0.65 |
 
 **Top default drivers (SHAP):** external credit scores `EXT_SOURCE_1/2/3` dominate;
 two **engineered** ratios (`GOODS_CREDIT_RATIO`, `CREDIT_TERM`) rank #3-#4, above every
 other raw feature — evidence the feature engineering added real signal. Full write-ups in
-[`reports/`](reports/): `model_selection.md`, `evaluation.md`, `interpretation.md`.
+[`reports/`](reports/): `model_selection.md`, `evaluation.md`, `interpretation.md`,
+`calibration.md`.
 
-> **Note on scores.** Probabilities are optimised for *ranking* (`scale_pos_weight` handles
-> the ~8% imbalance) and are not calibrated to the base rate; the operating threshold is a
-> business decision (see `reports/evaluation.md`). Calibration is a Phase-2 item.
+> **Scores are calibrated.** An isotonic map (fit on out-of-fold train+val scores) corrects
+> the `scale_pos_weight` inflation, so `probability_default` reads as an actual probability
+> (mean ≈ base rate; Brier 0.196 → 0.067) with ranking unchanged. The operating threshold
+> is a business decision (see `reports/evaluation.md`).
 
 ## Design principles
 

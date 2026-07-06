@@ -24,16 +24,16 @@ import joblib
 import pandas as pd
 
 from config import ROOT, load_config, resolve_path
+from models.scoring import default_proba
 
 DECISION_REVIEW = "review/decline"
 DECISION_APPROVE = "approve"
 
 
 def load_scorer(cfg: dict | None = None):
-    """Load the fitted pipeline, its metadata, and the operating threshold."""
+    """Load the saved bundle (pipeline + optional calibrator) and operating threshold."""
     cfg = cfg or load_config()
     bundle = joblib.load(resolve_path(cfg["artifacts"]["pipeline_file"]))
-    pipeline, meta = bundle["pipeline"], bundle["metadata"]
 
     # Operating threshold from Stage F if available, else config default.
     op_path = resolve_path(cfg["artifacts"]["model_dir"]) / "operating_point.json"
@@ -41,23 +41,24 @@ def load_scorer(cfg: dict | None = None):
         threshold = json.loads(op_path.read_text(encoding="utf-8"))["operating_threshold"]
     else:
         threshold = cfg["evaluation"]["default_threshold"]
-    return pipeline, meta, float(threshold)
+    return bundle, float(threshold)
 
 
 def score_frame(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataFrame:
     """Score raw application rows. Returns id (if any) + probability + decision.
 
-    The input is passed through the saved pipeline unchanged; identifier/target columns
-    are set aside so they don't interfere, then re-attached for output.
+    The input is passed through the saved pipeline unchanged (calibration applied if
+    present); identifier/target columns are set aside so they don't interfere, then
+    re-attached for output.
     """
     cfg = cfg or load_config()
-    pipeline, _, threshold = load_scorer(cfg)
+    bundle, threshold = load_scorer(cfg)
 
     id_col, target = cfg["data"]["id_column"], cfg["data"]["target"]
     ids = df[id_col] if id_col in df.columns else pd.Series(range(len(df)), name=id_col)
     features = df.drop(columns=[c for c in (id_col, target) if c in df.columns])
 
-    proba = pipeline.predict_proba(features)[:, 1]
+    proba = default_proba(bundle, features)
     out = pd.DataFrame({
         id_col: ids.values,
         "probability_default": proba,

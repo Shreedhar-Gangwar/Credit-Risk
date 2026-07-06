@@ -40,13 +40,15 @@ def main():
     print(f"target balance  : {ov['target_counts']}  (default rate {ov['default_rate']:.4f})")
     print(f"cols w/ missing : {ov['n_cols_with_missing']} / {ov['n_cols']}")
 
-    _banner("STAGE 2 - Train & select model")
+    _banner("STAGE 2 - Train, select & calibrate model")
     artifact = resolve_path(cfg["artifacts"]["pipeline_file"])
     if args.skip_train and artifact.exists():
-        print(f"--skip-train: reusing existing artifact at {artifact.name}")
+        print(f"--skip-train: reusing existing (calibrated) artifact at {artifact.name}")
     else:
         from models.train import train_and_select
+        from models.calibrate import calibrate
         train_and_select(cfg)
+        calibrate(cfg)              # augment artifact with a probability calibrator
 
     _banner("STAGE 3 - Evaluate on untouched test set")
     from evaluation.evaluate import evaluate
