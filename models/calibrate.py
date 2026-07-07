@@ -19,6 +19,8 @@ quality improves. Run:  python -m models.calibrate
 from __future__ import annotations
 
 import joblib
+import gc
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -31,8 +33,9 @@ from sklearn.metrics import brier_score_loss, roc_auc_score
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from config import ROOT, load_config, resolve_path
-from preprocessing.load import load_raw, split_X_y
+from preprocessing.load import split_X_y
 from preprocessing.pipeline import make_split
+from features.build import load_modeling_frame
 from models.train import build_model_pipeline
 from models.scoring import ProbabilityCalibrator
 
@@ -48,10 +51,14 @@ def calibrate(cfg: dict | None = None) -> dict:
     numeric, categorical = meta["numeric_features"], meta["categorical_features"]
     spw = meta["scale_pos_weight"]
 
-    df = load_raw()
+    df = load_modeling_frame(cfg)
     X, y = split_X_y(df)
     X_train, X_val, X_test, y_train, y_val, y_test = make_split(X, y, cfg)
     X_fit = pd.concat([X_train, X_val]); y_fit = pd.concat([y_train, y_val])
+    # Free the wide intermediates (~4 GB on the Phase-2 matrix); keep only what's needed:
+    # X_fit/y_fit for OOF calibration, X_test/y_test for the test-set effect.
+    del df, X, y, X_train, X_val, y_train, y_val
+    gc.collect()
 
     # Out-of-fold base scores on train+val (rebuild the tuned base pipeline).
     oof_pipe = build_model_pipeline("xgboost", numeric, categorical, cfg, spw, seed, n_jobs_model=-1)

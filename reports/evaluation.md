@@ -6,9 +6,9 @@ Final model: **xgboost** (refit on train+val, calibrated). Test set = 15% held o
 
 | Metric | Value | Reading |
 |---|---|---|
-| ROC-AUC | **0.7630** | ranking quality across all thresholds |
-| PR-AUC | **0.2436** | precision/recall on the rare positive class (baseline = 0.081) |
-| Brier | 0.0674 | probability calibration (scores are calibrated (see `calibration.md`) — readable as actual probabilities) |
+| ROC-AUC | **0.7798** | ranking quality across all thresholds |
+| PR-AUC | **0.2687** | precision/recall on the rare positive class (baseline = 0.081) |
+| Brier | 0.0663 | probability calibration (scores are calibrated (see `calibration.md`) — readable as actual probabilities) |
 
 ROC-AUC and PR-AUC are the fair summary because they don't depend on an operating point. PR-AUC well above the prevalence baseline shows real signal on the minority (default) class.
 
@@ -18,10 +18,10 @@ Two errors cost differently: a **false negative** (approve a defaulter) loses pr
 
 | Operating point | Threshold | Precision | Recall | F1 | TP | FP | FN | TN |
 |---|---|---|---|---|---|---|---|---|
-| Cost-optimal (FN:FP=10:1) | 0.090 | 0.180 | 0.645 | 0.281 | 2403 | 10969 | 1321 | 31434 |
-| Base-rate reference | 0.081 | 0.164 | 0.712 | 0.266 | 2650 | 13545 | 1074 | 28858 |
+| Cost-optimal (FN:FP=10:1) | 0.090 | 0.186 | 0.683 | 0.293 | 2542 | 11094 | 1182 | 31309 |
+| Base-rate reference | 0.081 | 0.172 | 0.726 | 0.278 | 2702 | 12987 | 1022 | 29416 |
 
-At the cost-optimal threshold the model catches **65% of defaulters** (recall) at **18% precision** — i.e. it prevents 2,403 bad loans while wrongly declining 10,969 good applicants. Because a false negative is judged 10× costlier than a false positive, the optimum leans toward recall: catching defaulters matters more than avoiding the occasional wrongful decline. Raising the FN:FP ratio pushes the threshold lower and recall higher (see `figures/12_threshold_analysis.png`); the right value is a business policy decision, not a modelling one.
+At the cost-optimal threshold the model catches **68% of defaulters** (recall) at **19% precision** — i.e. it prevents 2,542 bad loans while wrongly declining 11,094 good applicants. Because a false negative is judged 10× costlier than a false positive, the optimum leans toward recall: catching defaulters matters more than avoiding the occasional wrongful decline. Raising the FN:FP ratio pushes the threshold lower and recall higher (see `figures/12_threshold_analysis.png`); the right value is a business policy decision, not a modelling one.
 
 ## Figures
 

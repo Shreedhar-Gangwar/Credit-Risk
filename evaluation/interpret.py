@@ -149,7 +149,31 @@ FEATURE_MEANING = {
     "NAME_FAMILY_STATUS_Married": "Married — associated with lower risk.",
     "CODE_GENDER_F": "Gender = Female (see fairness caveat).",
     "CODE_GENDER_M": "Gender = Male (see fairness caveat).",
+    # Phase-2 side-table features (notable ones)
+    "INS_LATE_MEAN": "Share of past installments paid late — direct repayment discipline.",
+    "INS_DPD_MEAN": "Average days-past-due on past installments.",
+    "INS_AMT_PAYMENT_SUM": "Total amount repaid across past installments.",
+    "PREV_DAYS_LAST_DUE_1ST_VERSION_MAX": "Timing of prior loans' scheduled last payment.",
+    "BURO_AMT_CREDIT_SUM_DEBT_STD": "Variability of outstanding debt across bureau credits.",
+    "BURO_ACTIVE_COUNT": "Number of currently active credits at other lenders.",
 }
+
+# Prefix -> plain-language group, for the many aggregated side-table features.
+_PREFIX_MEANING = {
+    "BURO": "Credit-bureau history (loans at other lenders).",
+    "BB": "Monthly status history of bureau credits.",
+    "PREV": "Prior Home Credit application history.",
+    "INS": "Past installment-payment behaviour (on-time vs late).",
+    "POS": "Prior POS/cash-loan monthly history.",
+    "CC": "Prior credit-card monthly history.",
+}
+
+
+def _prefix_meaning(feature: str) -> str:
+    for pref, text in _PREFIX_MEANING.items():
+        if feature.startswith(pref + "_"):
+            return text
+    return "—"
 
 
 def _write_report(imp: pd.DataFrame, gain: pd.DataFrame, meta: dict, n_sample: int, cfg: dict):
@@ -166,7 +190,7 @@ def _write_report(imp: pd.DataFrame, gain: pd.DataFrame, meta: dict, n_sample: i
     ]
     for i, row in top.iterrows():
         base = row["feature"].replace("MISSING:", "")
-        meaning = FEATURE_MEANING.get(base, "—")
+        meaning = FEATURE_MEANING.get(base, _prefix_meaning(base))
         if row["feature"].startswith("MISSING:"):
             meaning = f"Whether **{base}** was missing (missingness itself carries signal)."
         arrow = "↑ risk" if row["direction"] == "up" else "↓ risk"
@@ -174,24 +198,22 @@ def _write_report(imp: pd.DataFrame, gain: pd.DataFrame, meta: dict, n_sample: i
                      f"{arrow} | {meaning} |")
     lines += [
         "\n## What drives default (plain language)\n",
-        "1. **External credit scores dominate.** `EXT_SOURCE_3/2/1` are the top signals by a "
-        "wide margin (mean|SHAP| ~0.12-0.36 vs <0.09 for everything else) — higher scores → "
-        "lower predicted default. They summarise external bureau information the application "
-        "form can't.\n"
-        "2. **Engineered loan-structure ratios pay off.** `GOODS_CREDIT_RATIO` (#3) and "
-        "`CREDIT_TERM` (#4) — both built in Stage D — rank above every raw feature except the "
-        "external scores. Higher goods-to-credit (more of the loan backed by the purchased "
-        "good, i.e. a larger down-payment) and higher annuity-to-credit (shorter effective "
-        "term) both **lower** risk. This directly validates the feature-engineering step.\n"
-        "3. **Age & employment stability.** Shorter employment (`DAYS_EMPLOYED`, #6) and "
-        "younger applicants (`DAYS_BIRTH`, #9) default more; larger instalments "
-        "(`AMT_ANNUITY`, #7) raise risk — life/job stability and affordable payments lower it.\n"
-        "4. **Demographics & behaviour.** Higher education (#8) and being married (#15) lower "
-        "risk; stability signals like `DAYS_ID_PUBLISH` (#12) and `OWN_CAR_AGE` (#13) "
-        "contribute. `CODE_GENDER` appears (#10-11) — flagged under fairness below.\n"
-        "5. **Missingness carries signal.** `OWN_CAR_AGE` is missing when the applicant has no "
-        "car, and such flags surface among the drivers — validating the Stage-C decision to "
-        "flag missing values rather than silently impute.\n",
+        "1. **External credit scores still dominate.** `EXT_SOURCE_2/3/1` are the top signals "
+        "by a wide margin — higher scores → lower predicted default. They summarise external "
+        "bureau information the application form can't.\n"
+        "2. **Engineered loan-structure ratios pay off.** `GOODS_CREDIT_RATIO` and "
+        "`CREDIT_TERM` (built in Phase 1) rank among the very top features — higher goods-to-"
+        "credit (larger down-payment) and shorter effective term both **lower** risk.\n"
+        "3. **Repayment history now matters (Phase 2).** Side-table features surface among the "
+        "drivers — most tellingly **`INS_LATE_MEAN`**, the share of past installments paid "
+        "late (**more past lateness → higher default**), plus prior-application timing "
+        "(`PREV_*`) and bureau debt variability (`BURO_*`). This is exactly the behavioural "
+        "signal Phase 2 set out to capture, and it directly explains the +0.016 test-AUC lift.\n"
+        "4. **Age & employment stability.** Shorter employment (`DAYS_EMPLOYED`) and younger "
+        "applicants (`DAYS_BIRTH`) default more; larger instalments (`AMT_ANNUITY`) raise "
+        "risk — life/job stability and affordable payments lower it.\n"
+        "5. **Demographics.** Higher education lowers risk; `CODE_GENDER` appears among the "
+        "drivers — flagged under fairness below.\n",
         "## Figures\n",
         "- `figures/14_shap_importance.png` — global importance (mean |SHAP|)\n"
         "- `figures/15_shap_beeswarm.png` — per-feature impact **and** direction\n"

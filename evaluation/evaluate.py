@@ -31,8 +31,9 @@ from sklearn.metrics import (
 )
 
 from config import ROOT, load_config, resolve_path
-from preprocessing.load import load_raw, split_X_y
+from preprocessing.load import split_X_y
 from preprocessing.pipeline import make_split
+from features.build import load_modeling_frame
 from models.scoring import default_proba
 
 BLUE, RED = "#4C78A8", "#E4572E"
@@ -48,7 +49,7 @@ def load_artifact(cfg: dict):
 
 def recreate_splits(cfg: dict):
     """Deterministically recreate the same split used in training (seeded)."""
-    df = load_raw()
+    df = load_modeling_frame(cfg)
     X, y = split_X_y(df)
     X_train, X_val, X_test, y_train, y_val, y_test = make_split(X, y, cfg)
     return X_val, y_val, X_test, y_test

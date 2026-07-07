@@ -21,6 +21,7 @@ Run:  python -m models.train
 """
 from __future__ import annotations
 
+import gc
 import json
 import time
 from datetime import datetime, timezone
@@ -36,12 +37,13 @@ from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold, train_t
 from xgboost import XGBClassifier
 
 from config import ROOT, load_config, resolve_path
-from preprocessing.load import load_raw, split_X_y
+from preprocessing.load import split_X_y
 from preprocessing.pipeline import (
     build_preprocessing_pipeline,
     make_split,
     prepare_feature_types,
 )
+from features.build import load_modeling_frame
 
 MODEL_NAMES = ["logistic_regression", "random_forest", "xgboost"]
 # Logistic Regression is the only model that needs standardized features.
@@ -118,15 +120,20 @@ def train_and_select(cfg: dict | None = None, verbose: bool = True) -> dict:
     seed = cfg["seed"]
     primary = cfg["models"]["primary_metric"]
 
-    df = load_raw()
+    df = load_modeling_frame(cfg)                 # application + configured side-table aggregates
     X, y = split_X_y(df)
     X_train, X_val, X_test, y_train, y_val, y_test = make_split(X, y, cfg)
     numeric, categorical = prepare_feature_types(X_train)
+    n_train, n_val, n_test = len(X_train), len(X_val), len(X_test)
+    # Free the full frames + the held-out test — on the wide Phase-2 matrix these are
+    # ~1.3 GB each and are not used again (test is held out; training uses only train/val).
+    del df, X, y, X_test, y_test
+    gc.collect()
 
     n_neg, n_pos = int((y_train == 0).sum()), int((y_train == 1).sum())
     scale_pos_weight = n_neg / n_pos
     if verbose:
-        print(f"train={len(X_train):,} val={len(X_val):,} test={len(X_test):,} (test held out)")
+        print(f"train={n_train:,} val={n_val:,} test={n_test:,} (test held out)")
         print(f"features: {len(numeric)} numeric + {len(categorical)} categorical")
         print(f"scale_pos_weight (n_neg/n_pos) = {scale_pos_weight:.3f}\n")
 
@@ -145,7 +152,15 @@ def train_and_select(cfg: dict | None = None, verbose: bool = True) -> dict:
     skf = StratifiedKFold(n_splits=cfg["cv"]["tune_n_splits"], shuffle=True, random_state=seed)
     results = {}
 
-    for name in MODEL_NAMES:
+    # Which models to compare (config-driven; defaults to all if unset).
+    model_names = cfg["models"].get("compare") or MODEL_NAMES
+    unknown = [m for m in model_names if m not in NEEDS_SCALING]
+    if unknown:
+        raise ValueError(f"Unknown model(s) in models.compare: {unknown}")
+    if verbose:
+        print(f"comparing models: {model_names}")
+
+    for name in model_names:
         t0 = time.time()
         # Windows-safe parallelism: search runs sequentially (n_jobs=1 — no per-candidate
         # data copies to loky workers, which exhausted resources with WinError 1450) while
@@ -181,11 +196,11 @@ def train_and_select(cfg: dict | None = None, verbose: bool = True) -> dict:
                   f"({r['fit_seconds']}s)  params={r['best_params']}")
 
     # --- Selection: best validation ROC-AUC, with interpretability note --------
-    ranked = sorted(MODEL_NAMES, key=lambda n: results[n]["val_roc_auc"], reverse=True)
+    ranked = sorted(model_names, key=lambda n: results[n]["val_roc_auc"], reverse=True)
     selected = ranked[0]
-    lr = results["logistic_regression"]["val_roc_auc"]
+    lr = results.get("logistic_regression", {}).get("val_roc_auc")
     note = ""
-    if selected != "logistic_regression" and (results[selected]["val_roc_auc"] - lr) < 0.01:
+    if selected != "logistic_regression" and lr is not None and (results[selected]["val_roc_auc"] - lr) < 0.01:
         note = ("Logistic Regression is within 0.01 val ROC-AUC of the winner — the simpler, "
                 "more interpretable model is a defensible alternative if transparency is prioritized.")
     if verbose:
@@ -207,7 +222,7 @@ def train_and_select(cfg: dict | None = None, verbose: bool = True) -> dict:
         "best_params": results[selected]["best_params"],
         "comparison": {n: {k: results[n][k] for k in
                            ("cv_roc_auc", "val_roc_auc", "val_pr_auc", "best_params", "fit_seconds")}
-                       for n in MODEL_NAMES},
+                       for n in model_names},
         "refit_on": "train+val",
         "tune_sample_size": int(len(X_tune)),
         "n_features_out": int(final_pipe.named_steps["prep"].get_feature_names_out().shape[0]),
@@ -246,7 +261,7 @@ def _write_report(metadata: dict, cfg: dict) -> None:
         "| Model | CV ROC-AUC | Val ROC-AUC | Val PR-AUC | Fit (s) |",
         "|---|---|---|---|---|",
     ]
-    for n in MODEL_NAMES:
+    for n in comp:
         c = comp[n]
         star = " **(selected)**" if n == metadata["selected_model"] else ""
         lines.append(f"| {n}{star} | {c['cv_roc_auc']:.4f} | {c['val_roc_auc']:.4f} "

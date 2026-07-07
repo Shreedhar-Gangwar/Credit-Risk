@@ -10,10 +10,21 @@ seed: 42                      # single source of randomness for splits, models, 
 
 # --- Data ----------------------------------------------------------------------
 data:
+  raw_dir: data/raw           # directory holding all raw CSVs (main + side tables)
   raw_train: data/raw/application_train.csv
   processed_dir: data/processed
   target: TARGET              # 1 = default, 0 = repaid (already in this convention)
   id_column: SK_ID_CURR       # unique primary key; excluded from features
+
+# --- Phase 2: relational side-table features ----------------------------------
+# Each named table is aggregated to one row per SK_ID_CURR and left-joined onto the
+# application table. Emptying the list reproduces the Phase-1 (single-table) model.
+# Grow incrementally: bureau -> previous_application -> pos_cash -> installments -> credit_card
+features:
+  # Lean set chosen by measured lift (pos_cash dropped — no lift, redundant with
+  # installments). bureau +0.0035, previous +0.0095, installments +0.0048, credit_card +0.0014.
+  side_tables: [bureau, previous_application, installments]
+  cache_aggregates: true      # cache to data/processed/agg_<table>.parquet (gitignored)
 
 # --- Train / validation / test split ------------------------------------------
 # Stratified on the target. test carved out first, then validation from the
@@ -38,6 +49,10 @@ cv:
 # not a leaderboard chase. Search grids are intentionally narrow.
 models:
   primary_metric: roc_auc     # scoring for CV comparison + tuning
+  # Models to compare/select among. random_forest is excluded by default in Phase 2:
+  # on the ~500-feature wide matrix its full-train refit takes ~75 min and it consistently
+  # loses to XGBoost. Add it back here to include it.
+  compare: [logistic_regression, xgboost]
 
   logistic_regression:
     max_iter: 1000

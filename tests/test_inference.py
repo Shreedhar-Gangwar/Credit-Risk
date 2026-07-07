@@ -2,7 +2,16 @@
 import numpy as np
 
 from models.scoring import default_proba
+from features.build import build_feature_matrix
 from inference.predict import score_frame, DECISION_APPROVE, DECISION_REVIEW
+
+
+def _wide_features(sample, cfg, n=None):
+    """Build the model's wide feature matrix (app + side-table aggregates) for a sample."""
+    df = sample if n is None else sample.head(n)
+    wide = build_feature_matrix(df, cfg)
+    return wide.drop(columns=[c for c in (cfg["data"]["id_column"], cfg["data"]["target"])
+                              if c in wide.columns])
 
 
 def test_bundle_structure(bundle):
@@ -11,7 +20,7 @@ def test_bundle_structure(bundle):
 
 
 def test_default_proba_in_unit_interval(bundle, raw_sample, cfg):
-    features = raw_sample.drop(columns=[cfg["data"]["target"]]).head(50)
+    features = _wide_features(raw_sample, cfg, n=50)
     p = default_proba(bundle, features)
     assert p.shape == (50,)
     assert np.all((p >= 0) & (p <= 1))
@@ -34,7 +43,7 @@ def test_calibrated_scores_near_base_rate(bundle, raw_sample, cfg):
     if bundle.get("calibrator") is None:
         import pytest
         pytest.skip("no calibrator")
-    features = raw_sample.drop(columns=[cfg["data"]["target"]])
+    features = _wide_features(raw_sample, cfg)
     base = bundle["pipeline"].predict_proba(features)[:, 1]
     calibrated = default_proba(bundle, features)
     assert calibrated.mean() < base.mean()          # calibration pulled scores down

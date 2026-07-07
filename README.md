@@ -23,15 +23,18 @@ Built in reviewable stages (see `CLAUDE.md` §5). Current progress:
 - [x] **Stage G** — interpretation: TreeSHAP importance/beeswarm/dependence + plain-language drivers (`reports/interpretation.md`)
 - [x] **Stage H** — reproducibility: inference script (`inference/predict.py`) + end-to-end runner (`run_pipeline.py`)
 - [x] **Polish** — probability **calibration** (isotonic, OOF; `models/calibrate.py`) + a **pytest** suite (`tests/`)
+- [x] **Phase 2** — relational side-table features (`features/aggregate.py`, `features/build.py`): bureau, previous_application, installments aggregated per applicant → **test ROC-AUC 0.764 → 0.780**
 
-**Phase 1 complete.** Phase 2 (deferred): the 8 relational side-tables and a deeper
-protected-attribute fairness review.
+**Phase 1 & 2 complete.** Remaining (deferred): a deeper protected-attribute fairness
+review, and time-windowed history features.
 
 ## Dataset
 
 **Home Credit Default Risk.** Phase 1 uses the single main application table
-(`data/raw/application_train.csv`, 307,511 × 122). The 8 relational side-tables are
-deferred to Phase 2.
+(`data/raw/application_train.csv`, 307,511 × 122). **Phase 2** adds prior-credit history
+from the relational side-tables (`bureau`, `previous_application`, `installments_payments`),
+aggregated to one row per applicant and joined on `SK_ID_CURR` — see
+[`reports/phase2_features.md`](reports/phase2_features.md).
 
 - **Target:** `TARGET` — `1 = default`, `0 = repaid` (already in this convention; verified,
   not re-mapped). Default rate ≈ 8.1% (imbalance ≈ 11.4 : 1).
@@ -45,7 +48,7 @@ dataset and place them under `data/raw/`.
 ```
 config/         central YAML config + loader (paths, seed, split ratios, model params)
 preprocessing/  data loading, cleaning, reusable leakage-safe preprocessing pipeline
-features/       business-relevant feature engineering
+features/       business-relevant feature engineering + side-table aggregation (Phase 2)
 models/         training + tuning, probability calibration, scoring helper, artifacts/
 evaluation/     metrics, plots, business-cost analysis, SHAP interpretation
 inference/      load saved pipeline + model, score new rows (never re-fits)
@@ -79,6 +82,10 @@ python -m inference.predict --input new_apps.csv --output scored.csv
 python -m inference.predict          # demo on a few rows from the raw data
 ```
 
+> **Phase-2 inference** builds the same side-table aggregates on the fly, so scoring an
+> applicant needs their rows in the side-tables under `data/raw/` (matched by `SK_ID_CURR`).
+> Aggregates are cached to `data/processed/` after the first build.
+
 Individual stages are also runnable: `python -m models.train`,
 `python -m models.calibrate`, `python -m evaluation.evaluate`,
 `python -m evaluation.interpret`. EDA lives in `notebooks/01_eda.ipynb`.
@@ -90,18 +97,21 @@ Tests: `python -m pytest` (from the repo root).
 Test set = 15% held out, scored once. Final model **XGBoost** (selected over Logistic
 Regression and Random Forest on validation ROC-AUC).
 
-| Metric (untouched test) | Value |
-|---|---|
-| ROC-AUC | **0.763** |
-| PR-AUC | 0.244 (vs 0.081 prevalence baseline) |
-| Brier (after calibration) | **0.067** (from 0.196 raw) |
-| Recall @ cost-optimal threshold (FN:FP=10:1) | 0.65 |
+| Metric (untouched test) | Phase 1 | Phase 2 |
+|---|---|---|
+| ROC-AUC | 0.764 | **0.780** |
+| PR-AUC (baseline 0.081) | 0.251 | **0.269** |
+| Recall @ cost-optimal (FN:FP=10:1) | 0.65 | **0.68** |
+| Brier (after calibration) | 0.067 | 0.066 |
+
+Phase 2's lift comes from prior-credit history — most tellingly the applicant's **past
+late-payment rate** (`INS_LATE_MEAN`), which SHAP surfaces among the top drivers.
 
 **Top default drivers (SHAP):** external credit scores `EXT_SOURCE_1/2/3` dominate;
-two **engineered** ratios (`GOODS_CREDIT_RATIO`, `CREDIT_TERM`) rank #3-#4, above every
-other raw feature — evidence the feature engineering added real signal. Full write-ups in
-[`reports/`](reports/): `model_selection.md`, `evaluation.md`, `interpretation.md`,
-`calibration.md`.
+**engineered** ratios (`GOODS_CREDIT_RATIO`, `CREDIT_TERM`) and **history** features
+(`INS_LATE_MEAN`, `PREV_*`, `BURO_*`) follow. Full write-ups in [`reports/`](reports/):
+`model_selection.md`, `evaluation.md`, `interpretation.md`, `calibration.md`,
+`phase2_features.md`.
 
 > **Scores are calibrated.** An isotonic map (fit on out-of-fold train+val scores) corrects
 > the `scale_pos_weight` inflation, so `probability_default` reads as an actual probability

@@ -25,6 +25,7 @@ import pandas as pd
 
 from config import ROOT, load_config, resolve_path
 from models.scoring import default_proba
+from features.build import build_feature_matrix
 
 DECISION_REVIEW = "review/decline"
 DECISION_APPROVE = "approve"
@@ -56,7 +57,10 @@ def score_frame(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataFrame:
 
     id_col, target = cfg["data"]["id_column"], cfg["data"]["target"]
     ids = df[id_col] if id_col in df.columns else pd.Series(range(len(df)), name=id_col)
-    features = df.drop(columns=[c for c in (id_col, target) if c in df.columns])
+    # Build the same wide matrix used in training (application + side-table aggregates,
+    # joined by SK_ID_CURR). Applicants absent from the side tables get NaN = no history.
+    wide = build_feature_matrix(df, cfg)
+    features = wide.drop(columns=[c for c in (id_col, target) if c in wide.columns])
 
     proba = default_proba(bundle, features)
     out = pd.DataFrame({
